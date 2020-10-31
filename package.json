@@ -1,0 +1,19 @@
+{
+  "name": "syncftp",
+  "version": "1.0.0",
+  "description": "",
+  "main": "sync.js",
+  "scripts": {
+    "run": "node sync"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "clipboardy": "^2.3.0",
+    "ftp": "^0.3.10",
+    "get-stream": "^6.0.0",
+    "glob": "^7.1.6",
+    "md5": "^2.3.0",
+    "merge": "^1.2.1"
+  }
+}
