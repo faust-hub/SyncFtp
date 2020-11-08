@@ -21,6 +21,8 @@ module.exports = class ContentWork {
         this.remoteContent = null
         this.localContent = null
         this.tasksThreads = null
+
+        process.on('unhandledRejection', (err) => this.sessionLog.error(err.toString()))
     }
 
     async synchronizeToFtp(isUseKeepRemoteData) {    
@@ -33,15 +35,12 @@ module.exports = class ContentWork {
                 this.remoteContent = await fs.promises.readFile(pathFile)
                     .then((data) => JSON.parse(data.toString()))
                     .catch(() => this.sessionLog.error(`Unable to read file "${pathFile}"`))
-            } else {                
+            } else do {
                 ContentWork.outProgressBar('Get remote content')            
-                
-                while (true) {
-                    this.remoteContent = { folders: [], files: {} }
-                    if (await this.getRemoteContent() || (await Terminal.inputConfirm('Fail get remote content. Try again? [Y/N]', ['Y', 'N'], 'Y') === 'N')) break
-                }               
-            }
-                    
+                this.remoteContent = null
+                if (!await this.getRemoteContent() && (await Terminal.inputConfirm('Fail get remote content. Try again? [Y/N]', ['Y', 'N'], 'Y') === 'N')) break                    
+            } while(!this.remoteContent)
+
             if (this.remoteContent) {
                 this.getLocalContent()
                 await this.processing()
@@ -96,15 +95,17 @@ module.exports = class ContentWork {
         this.localContent = res
     }
 
-    async getRemoteContent(currentFolder = '') {
-        let listContent = await this.getRemoteList(currentFolder)
+    async getRemoteContent(currentFolder) {
+        let listContent = await this.getRemoteList(currentFolder || '')
         if (listContent.data) {
-            for (let ind in listContent.data) {
-                if (currentFolder === '') ContentWork.outProgressBar('Get remote content', Number(ind), listContent.data.length)
+            if (!currentFolder) this.remoteContent = { folders: [], files: {} }
+
+            for (let ind in listContent.data) {                
+                if (!currentFolder) ContentWork.outProgressBar('Get remote content', Number(ind), listContent.data.length)
 
                 let item = listContent.data[ind]
                 if (!['.', '..'].includes(item.name)) {
-                    let pathItem = path.join(currentFolder, item.name)
+                    let pathItem = path.join(currentFolder || '', item.name)
 
                     if (item.type === 'd') {
                         if (!this.remoteContent.folders.includes(pathItem)) this.remoteContent.folders.push(pathItem)

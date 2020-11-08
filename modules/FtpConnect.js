@@ -2,9 +2,9 @@ const fs = require('fs')
 const ftp = require('ftp')
 const getStream = require('get-stream')
 
-const ERR_GET_FILE_STREAM = 995
-const ERR_FAIL_RESPONSE = 996
-const ERR_OVER_LIM_REQ = 997
+const ERR_INCORRECT_PARAM = 995
+const ERR_GET_FILE_STREAM = 996
+const ERR_FAIL_RESPONSE = 997
 const ERR_TIMEOUT = 998
 
 const FORCE_CLOSE_CONNECT = 999
@@ -14,14 +14,10 @@ module.exports = class FtpConnect {
     constructor (inFtpParams, dbgLog) {
         this.params = inFtpParams
         this.poolCmd = {}
-        this.connections = new Array(this.params.numThreads + 5).fill({}).map(rec => this.clearRecordConnect())
+        this.connections = new Array(this.params.numThreads + 5).fill({}).map(rec => { return { idCmd: null, errCode: null, ftpParams: null, connect: null } })
 
         // this.dbgOut = (...args) => dbgLog.out(...args)
         this.dbgOut = (...args) => {}
-    }
-
-    clearRecordConnect() {
-        return { idCmd: null, errCode: null, ftpParams: null, connect: null }
     }
 
     async runCommand(inParams) {
@@ -34,34 +30,46 @@ module.exports = class FtpConnect {
             this.poolCmd[idCmd] = {
                 indConnect: -1,                
                 cntTryRequest: 0,
-                temporaryConnect: inParams.temporaryConnect,
+                temporaryConnect: inParams.temporaryConnect,                
 
                 execCmd: (thisId) => {
+                    let recCmd = this.poolCmd[thisId]                    
                     if (inParams.onProgress) inParams.onProgress(inParams.objectId, 0)
 
-                    let tmrTimeOut
-                    let thisRecord = this.poolCmd[thisId]
+                    let tmrTimeOut, timeOut
                     let arrayArgs = inParams.args ? (Array.isArray(inParams.args) ? inParams.args : [inParams.args]) : []
+                    const setHandlerTimeOut = () => { tmrTimeOut = setTimeout(() => this.runFinallyCmd(thisId, ERR_TIMEOUT, null, true), timeOut)}
 
                     if (inParams.cmd === 'put') {
-                        if (typeof arrayArgs[0] === 'string') arrayArgs[0] = this.makeFileReadStream(arrayArgs[0], () => { this.checkCmdTryAgain(thisId) }, inParams.objectId, inParams.onProgress)
-                        else this.checkCmdTryAgain(thisId)
-                    } else tmrTimeOut = setTimeout(() => { this.checkCmdTryAgain(thisId) }, (inParams.temporaryConnect && inParams.temporaryConnect.timeOutRequest) || this.params.timeOutRequest)
+                        timeOut = this.params.timeOutTransfer
 
-                    this.connections[thisRecord.indConnect].connect[inParams.cmd](...arrayArgs.concat(async (...args) => {                        
-                        if (tmrTimeOut) clearTimeout(tmrTimeOut)
+                        let pathFile = (typeof arrayArgs[0] === 'string') ? arrayArgs[0] : arrayArgs[0].path                        
+                        if (pathFile) {
+                            arrayArgs[0] = fs.createReadStream(pathFile)
+
+                            arrayArgs[0].on('data', (data) => {
+                                clearTimeout(tmrTimeOut)
+                                setHandlerTimeOut()
+                                if (inParams.onProgress) inParams.onProgress(inParams.objectId, data.length)
+                            })
+                    
+                            arrayArgs[0].once('close', () => clearTimeout(tmrTimeOut))
+                        } else this.runFinallyCmd(thisId, ERR_INCORRECT_PARAM, null, false)                        
+                    } else timeOut = (recCmd.temporaryConnect && recCmd.temporaryConnect.timeOutRequest) || this.params.timeOutRequest
+                    
+                    setHandlerTimeOut()
+
+                    this.connections[recCmd.indConnect].connect[inParams.cmd](...arrayArgs.concat(async (...args) => {                        
+                        clearTimeout(tmrTimeOut)
                         
                         let result = this.parseResult(args)
                         if (inParams.isReadStream && !result.error) result = await this.getFileStream(result.data, inParams.objectId, inParams.onProgress)
 
-                        this.runFinallyCmd(thisId, result.error, result.data, thisRecord.temporaryConnect)                        
+                        this.runFinallyCmd(thisId, result.error, result.data, recCmd.temporaryConnect)
                     }))
                 },
 
-                finallyCmd: (errorCode, resultCmd) => {
-                    this.poolCmdProcessing()        
-                    resolve({ error: errorCode, data: resultCmd })
-                } 
+                finallyCmd: (errorCode, resultCmd) => resolve({ error: errorCode, data: resultCmd })                 
             }
 
             this.poolCmdProcessing()
@@ -77,27 +85,21 @@ module.exports = class FtpConnect {
     }
 
     runFinallyCmd(idCmd, errorCode, resultCmd, isDestroyConnect) {
-        if (idCmd && this.poolCmd[idCmd]) {
-            this.dbgOut(`[${this.poolCmd[idCmd].indConnect}] END #${idCmd} - err: ${errorCode}, res: ${resultCmd ? resultCmd.length : resultCmd}, close: ${isDestroyConnect}`)
-
-            let indConnect = this.poolCmd[idCmd].indConnect
-            this.connections[indConnect].idCmd = null            
-            this.poolCmd[idCmd].finallyCmd(errorCode, resultCmd)
-
-            delete this.poolCmd[idCmd]
-
-            if (isDestroyConnect) this.closeConnect(indConnect)
-        }
-    }
-
-    checkCmdTryAgain(idCmd) {
         let recCmd = this.poolCmd[idCmd]
+        if (recCmd) {
+            this.dbgOut(`[${recCmd.indConnect}] END #${idCmd} - err: ${errorCode}, res: ${resultCmd ? resultCmd.length : resultCmd}, close: ${isDestroyConnect}`)
+            
+            if (errorCode && (recCmd.cntTryRequest < ((recCmd.temporaryConnect && recCmd.temporaryConnect.limTryRequest) || this.params.limTryRequest))) {
+                this.closeConnect(recCmd.indConnect, true)
+                recCmd.indConnect = -1
+            } else {
+                this.closeConnect(recCmd.indConnect, isDestroyConnect || errorCode)
+                recCmd.finallyCmd(errorCode, resultCmd)
+                delete this.poolCmd[idCmd]                
+            }
 
-        if (recCmd.cntTryRequest < this.params.limTryRequest) {
-            this.closeConnect(recCmd.indConnect)
-            recCmd.indConnect = -1
             this.poolCmdProcessing()
-        } else this.runFinallyCmd(idCmd, ERR_OVER_LIM_REQ, null, true)
+        }
     }
 
     poolCmdProcessing() {        
@@ -105,16 +107,16 @@ module.exports = class FtpConnect {
             let recCmd = this.poolCmd[idCmd]
 
             if (recCmd.indConnect < 0) {
-                this.dbgOut('TRY START:', idCmd)
+                this.dbgOut('TRY START:', idCmd, '(free: ' + this.connections.filter(rec => !rec.idCmd).length + ')')
 
                 if (!this.connections.some((recConnection, indConnect) => { 
-                    if (!recConnection.errCode && !recConnection.idCmd) {
+                    if (!recConnection.errCode && !recConnection.idCmd) {                                              
                         recConnection.idCmd = idCmd
                         recConnection.ftpParams = recCmd.temporaryConnect || this.params
 
                         recCmd.indConnect = indConnect
                         recCmd.cntTryRequest++
-    
+
                         this.activateConnect(indConnect)
                         return true
                     }
@@ -133,22 +135,21 @@ module.exports = class FtpConnect {
 
             recConnect.connect.removeAllListeners()
 
-            recConnect.connect.once('error', (error) => {
+            recConnect.connect.on('error', (error) => {
                 clearTimeout(tmrTimeOut)
                 this.runFinallyCmd(recConnect.idCmd, error.code, null, true)
             })
 
             recConnect.connect.once('ready', () => {
-                clearTimeout(tmrTimeOut)                                                
-                this.runExecCmd(recConnect.idCmd)           
+                clearTimeout(tmrTimeOut)
+                this.runExecCmd(recConnect.idCmd)
             })
 
             recConnect.connect.once('close', () => {
-                this.dbgOut(`[${indConnect}] END CONNECT`)
+                this.dbgOut(`[${indConnect}] CLOSE CONNECT`)
 
                 clearTimeout(tmrTimeOut)
-                this.runFinallyCmd(recConnect.idCmd, recConnect.errCode, null, false)
-                this.connections[indConnect] = this.clearRecordConnect()                
+                this.closeConnect(indConnect, false)
                 this.poolCmdProcessing()
             })
 
@@ -157,36 +158,25 @@ module.exports = class FtpConnect {
     }
 
     closeAllConnects() {
-        for (let indConnect in this.connections) this.closeConnect(indConnect)
+        for (let indConnect in this.connections) this.closeConnect(indConnect, true)
     }
 
-    closeConnect(indConnect) {
-        this.dbgOut(`[${indConnect}] CLOSE CONNECT`)
+    closeConnect(indConnect, isDestroy) {
+        this.dbgOut(`[${indConnect}] ${isDestroy ? 'DESTROY' : 'FREE'} CONNECT`)
 
         let recConnect = this.connections[indConnect]
-        if (recConnect.connect) {
+        if (recConnect) {
             recConnect.idCmd = null
-            recConnect.errCode = FORCE_CLOSE_CONNECT
-            recConnect.connect.destroy()
+            recConnect.ftpParams = null
+
+            if (isDestroy && recConnect.connect) {
+                recConnect.errCode = FORCE_CLOSE_CONNECT
+                recConnect.connect.destroy()
+            } else recConnect.errCode = null
         }
     }    
 
-    makeFileReadStream(fileName, onTimeOut, objectId, onProgress) {
-        let readStream = fs.createReadStream(fileName)
-        let tmrUploadTimeOut = setTimeout(() => onTimeOut(), this.params.timeOutTransfer)
-
-        readStream.on('data', (data) => {
-            clearTimeout(tmrUploadTimeOut)
-            tmrUploadTimeOut = setTimeout(() => onTimeOut(), this.params.timeOutTransfer)
-            if (onProgress) onProgress(objectId, data.length)
-        })
-
-        readStream.once('close', () => clearTimeout(tmrUploadTimeOut))
-
-        return readStream
-    }
-
-    async getFileStream(inStream, objectId, onProgress) {
+    getFileStream(inStream, objectId, onProgress) {
         return new Promise(resolve => {
             if (inStream) {
                 let tmrTimeOut = setTimeout(() => resolve({ error: ERR_TIMEOUT }), this.params.timeOutTransfer)

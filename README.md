@@ -1,6 +1,7 @@
 # Synchronization FTP (Node.js)
 
 Terminal application for synchronization contents the local folder with the remote folder via FTP.
+
 Implemented: analysis contents differences, execute multithread tasks, check result and several attempts for unsuccessful operations. Detailed logging all actions.
 
 Menu actions:
