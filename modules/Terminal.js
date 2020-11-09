@@ -35,13 +35,17 @@ module.exports = class Terminal {
         return escapeCodes
     }
 
-    static clearScreen(cursorX = 0, cursorY = 0) {
-        process.stdout.write(escapeCodes.Clear + escapeCodes.Cursor.MoveTo(cursorX, cursorY))
+    static clearScreen(cursorX = 0, cursorY = 0, isCursorShow = true) {
+        process.stdout.write(escapeCodes.Clear + escapeCodes.Cursor.MoveTo(cursorX, cursorY) + (isCursorShow ? escapeCodes.Cursor.Show : escapeCodes.Cursor.Hide))
     }
 
     // -InputMenu
-    static async inputMenu(inData) {        
-        let listItems = inData.items.map((item, ind) => { return { name: item.name, value: item.run } })
+    static async inputMenu(inData) {
+        let listItems = []
+
+        for (let itemName in inData.items)
+            listItems.push({ name: itemName, value: inData.items[itemName] })
+
         let options = {
             header: (inData.header && (inData.header.length > 0)) ? `${Terminal.style.Bright} ${inData.header}${Terminal.style.Reset}` : ''
         }
@@ -503,6 +507,17 @@ module.exports = class Terminal {
         if (underline === true) outStr += '‾'.repeat(headerText.length) + '\n'
         process.stdout.write(outStr)
         return outStr
+    }
+
+    // -OutputPanel
+    static outputPanel(headerText, topPanel, widthPanel, heightPanel) {
+        this.clearScreen(0, topPanel, false)
+        process.stdout.write(`┌─ ${headerText} ${'─'.repeat(widthPanel - headerText.length - 5)}┐\n`)
+
+        for (let line = 0; line < heightPanel; line++) 
+            process.stdout.write('│' + ' '.repeat(widthPanel - 2) + '│\n')
+        
+        process.stdout.write('└' + '─'.repeat(widthPanel - 2) + '┘')
     }
 
     static interceptKeypressEvents(handlerFunc) {

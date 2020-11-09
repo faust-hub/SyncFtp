@@ -3,16 +3,16 @@ module.exports = {
     pathLocalFolder: '',
     pathRemoteFolder: '',
 
-    fileKeepRemoteContent: 'remote-content.json',    
+    fileKeepContent: 'keep-content.json',    
 
-    ftpParams: {        
+    ftpParams: {
         connection: {
             host: '',
             port: 21,
             user: '',
-            password: ''
+            password: ''            
         },
-        
+
         numThreads: 5,
 
         limTryAction: 3,    

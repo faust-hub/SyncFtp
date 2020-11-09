@@ -6,28 +6,32 @@ const TASK_COMPLETE = 2
 const TASK_FAIL = 3
 const TASK_IGNORE = 4
 
-const SCREEN_WIDTH = 70
+const PANEL_TOP = 2
+const PANEL_WIDTH = 70
+const PANEL_MARGIN = 2
+
 const MAX_LEN_PROGRESS_WORD = 4
 
 module.exports = class TasksThreads {
 
     runTasks(inData) {
-        Terminal.clearScreen()
         this.threads = new Array(inData.numThreads).fill(-1)
         this.poolTasks = inData.tasksItems.map(item => { return { name: item, progress: -1, status: TASK_WAIT, thread: -1 } })
         this.execTask = inData.execTask
         this.finallyTasks = inData.finallyTasks
         this.title = inData.title
         this.tryAgainConfirmHeader = inData.tryAgainConfirmHeader
+
+        this.makePanel()
         this.processingThreads()
     }
 
     tryAgainRunFailTasks() {
-        Terminal.clearScreen()
         this.poolTasks.forEach(recTask => {
             recTask.status = (recTask.status === TASK_COMPLETE) || (recTask.status === TASK_IGNORE) ? TASK_IGNORE : TASK_WAIT
         })
 
+        this.makePanel()
         this.processingThreads()
     }
 
@@ -36,7 +40,7 @@ module.exports = class TasksThreads {
             if (task.name === inName) {
                 if (task.progress !== inProgress) {
                     task.progress = (inProgress !== undefined) ? inProgress : -1
-                    this.updateScreen()
+                    this.updatePanel()
                 }
                 return true
             }
@@ -62,10 +66,12 @@ module.exports = class TasksThreads {
                 })
             }
 
-        this.updateScreen()
+        this.updatePanel()
 
         if (this.threads.filter(indTask => indTask !== -1).length === 0) {
-            let tasksFail = this.getTasksByStatus(TASK_FAIL)
+            process.stdout.write(Terminal.style.Cursor.MoveTo(0, PANEL_TOP + this.threads.length + 6) + Terminal.style.Cursor.Show)
+            
+            let tasksFail = this.getTasksByStatus(TASK_FAIL)        
             if (tasksFail.length > 0) {
                 process.stdout.write(`${this.tryAgainConfirmHeader} (x${tasksFail.length}):\n`)
                 tasksFail.forEach(recTask => process.stdout.write(`- ${recTask.name}\n`))
@@ -80,23 +86,25 @@ module.exports = class TasksThreads {
         return this.poolTasks.filter(recTask => recTask.status === findStatus)
     }
 
-    updateScreen() {
-        process.stdout.write(Terminal.style.Cursor.MoveTo(0, 2))
-        process.stdout.write(`┌─ ${this.title} ${'─'.repeat(SCREEN_WIDTH - this.title.length - 5)}┐\n`)
-        this.outScreenClearLine()
+    makePanel() {
+        Terminal.outputPanel(this.title, PANEL_TOP, PANEL_WIDTH, this.threads.length + 4)
+        this.prevProgressDone = -1
+    }
 
+    updatePanel() {
         let numComplete = this.getTasksByStatus(TASK_COMPLETE).length
         let numFail = this.getTasksByStatus(TASK_FAIL).length
         let numAll = this.poolTasks.length - this.getTasksByStatus(TASK_IGNORE).length
         
-        this.outScreenLine(Terminal.style.fg.Green + Terminal.style.Bright + numComplete + Terminal.style.Reset + '/' + Terminal.style.Bright + Terminal.style.fg.Red + numFail + Terminal.style.Reset + '/' + numAll, 26)
+        this.outScreenLine(2, Terminal.style.fg.Green + Terminal.style.Bright + numComplete + Terminal.style.Reset + '/' + Terminal.style.Bright + Terminal.style.fg.Red + numFail + Terminal.style.Reset + '/' + numAll, 26)
 
-        let lenDone = Math.trunc((numComplete + numFail) * (SCREEN_WIDTH - 6) / numAll)
-        this.outScreenLine('▓'.repeat(lenDone) + '░'.repeat(SCREEN_WIDTH - 6 - lenDone))
+        let lenDone = Math.trunc((numComplete + numFail) * (PANEL_WIDTH - 6) / numAll)
+        if (this.prevProgressDone != lenDone) {
+            this.outScreenLine(3, '▓'.repeat(lenDone) + '░'.repeat(PANEL_WIDTH - 6 - lenDone))
+            this.prevProgressDone = lenDone
+        }
 
-        this.outScreenClearLine()
-
-        this.threads.forEach(indTask => {
+        this.threads.forEach((indTask, indThread) => {
             let symbList = '■'
             let outItem = ' '
 
@@ -114,24 +122,18 @@ module.exports = class TasksThreads {
                 symbList = Terminal.style.fg.Green + symbList + Terminal.style.Reset
             } else symbList = Terminal.style.fg.Gray + symbList + Terminal.style.Reset
 
-            this.outScreenLine(symbList + outItem, symbList.length - 1)
+            this.outScreenLine(indThread + 5, symbList + outItem, symbList.length - 1)
         })
-
-        this.outScreenClearLine('└', '─', '┘')
     }
 
-    outScreenLine(strContent, addSpaces = 0, leftMargin = 2) {
-        let lenAddSpaces = SCREEN_WIDTH - leftMargin - strContent.length + addSpaces - 2
+    outScreenLine(numLine, strContent, addSpaces = 0) {
+        let lenAddSpaces = PANEL_WIDTH - (PANEL_MARGIN * 2) - 1 - strContent.length + addSpaces
         if (lenAddSpaces <= 0) {
-            strContent = strContent.slice(0, lenAddSpaces - 4) + '... '
+            strContent = strContent.slice(0, lenAddSpaces - (PANEL_MARGIN * 2) - 1) + '...'
             lenAddSpaces = 0
         }
-
-        process.stdout.write('│' + ' '.repeat(leftMargin) + strContent + ' '.repeat(lenAddSpaces) + '│\n')
-    }
-
-    outScreenClearLine(chLeft = '│', chMid = ' ', chRight = '│') {
-        process.stdout.write(chLeft + chMid.repeat(SCREEN_WIDTH - 2) + chRight + '\n')
+        
+        process.stdout.write(Terminal.style.Cursor.MoveTo(PANEL_MARGIN + 2, PANEL_TOP + numLine) + strContent + ' '.repeat(lenAddSpaces))
     }
 
 }

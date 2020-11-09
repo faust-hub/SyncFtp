@@ -9,6 +9,10 @@ const FtpConnect = require('./FtpConnect.js')
 const TasksThreads = require('./TasksThreads.js')
 const Terminal = require('./Terminal.js')
 
+const PANEL_TOP = 2
+const PANEL_WIDTH = 50
+const PANEL_MARGIN = 2
+
 module.exports = class ContentWork {
 
     constructor(config) {
@@ -20,26 +24,36 @@ module.exports = class ContentWork {
         this.isCorrectConnect = false
         this.remoteContent = null
         this.localContent = null
+        this.keepLocalFiles = null
         this.tasksThreads = null
 
         process.on('unhandledRejection', (err) => this.sessionLog.error(err.toString()))
     }
 
-    async synchronizeToFtp(isUseKeepRemoteData) {    
-        if (await this.checkConnect()) {
+    async synchronizeToFtp(isUseKeepRemoteData) {
+        if ((!isUseKeepRemoteData || await Terminal.inputConfirm('If you changed manually remote content, next actions will be incorrect\nAre you sure you want to continue [Y/N]?', ['Y', 'N']) === 'Y') && await this.checkConnect()) {
             this.sessionLog.begin()
             this.sessionLog.outService('START SYNCHRONIZE LOCAL CONTENT TO FTP' + (isUseKeepRemoteData ? ' (use keeped remote data)\n' : '\n'))
 
-            if (isUseKeepRemoteData) {
-                let pathFile = path.join(__dirname, '..', this.params.fileKeepRemoteContent)
-                this.remoteContent = await fs.promises.readFile(pathFile)
-                    .then((data) => JSON.parse(data.toString()))
-                    .catch(() => this.sessionLog.error(`Unable to read file "${pathFile}"`))
-            } else do {
-                ContentWork.outProgressBar('Get remote content')            
-                this.remoteContent = null
-                if (!await this.getRemoteContent() && (await Terminal.inputConfirm('Fail get remote content. Try again? [Y/N]', ['Y', 'N'], 'Y') === 'N')) break                    
-            } while(!this.remoteContent)
+            let pathFileKeepContent = path.join(__dirname, '..', this.params.fileKeepContent)
+            await fs.promises.readFile(pathFileKeepContent)
+                .then((data) => {
+                    let keepData = JSON.parse(data.toString())
+                    this.keepLocalFiles = keepData.localFiles
+                    this.remoteContent = keepData.remoteContent
+                })
+                .catch(() => {
+                    this.keepLocalFiles = {}
+                    this.remoteContent = null
+                    if (isUseKeepRemoteData) this.sessionLog.error(`Not exist file with keep remote data ("${pathFileKeepContent}")`)
+                })
+
+            if (!isUseKeepRemoteData)
+                do {            
+                    await this.getRemoteContent()
+                    Terminal.clearScreen()
+                    if (!this.remoteContent && (await Terminal.inputConfirm('Fail get remote content. Try again? [Y/N]', ['Y', 'N'], 'Y') === 'N')) break
+                } while(!this.remoteContent)
 
             if (this.remoteContent) {
                 this.getLocalContent()
@@ -76,32 +90,41 @@ module.exports = class ContentWork {
     }
     
     getLocalContent() {
-        ContentWork.outProgressBar('Get local content')
+        this.makePanel('Get local content')
 
         let res = { folders: [], files: {} }
         let pathRoot = path.join(__dirname, this.params.pathLocalFolder)
 
         let listContent = glob.sync(path.join(pathRoot, '**/*'))
         listContent.forEach((pathItem, ind) => {
-            ContentWork.outProgressBar('Get local content', ind, listContent.length)
+            this.updatePanel(ind, listContent.length)
 
             let pathRelative = path.normalize(pathItem).replace(pathRoot + path.sep, '')
             let statsItem = fs.statSync(pathItem)
             
-            if (statsItem.isFile()) res.files[pathRelative] = { size: statsItem.size }
-            else res.folders.push(pathRelative)
+            if (statsItem.isFile()) {
+                res.files[pathRelative] = { size: statsItem.size, mtime: statsItem.mtimeMs }
+                let recKeep = this.keepLocalFiles[pathRelative]
+                if (recKeep && recKeep.hash && (recKeep.size === statsItem.size) && (recKeep.mtime === statsItem.mtimeMs)) res.files[pathRelative].hash = recKeep.hash
+            } else res.folders.push(pathRelative)
         })
-
+        
+        Terminal.clearScreen()
         this.localContent = res
     }
 
     async getRemoteContent(currentFolder) {
+        if (!currentFolder) {
+            this.remoteContent = null
+            this.makePanel('Get remote content')
+        }
+
         let listContent = await this.getRemoteList(currentFolder || '')
         if (listContent.data) {
             if (!currentFolder) this.remoteContent = { folders: [], files: {} }
 
             for (let ind in listContent.data) {                
-                if (!currentFolder) ContentWork.outProgressBar('Get remote content', Number(ind), listContent.data.length)
+                if (!currentFolder) this.updatePanel(ind, listContent.data.length)
 
                 let item = listContent.data[ind]
                 if (!['.', '..'].includes(item.name)) {
@@ -122,8 +145,6 @@ module.exports = class ContentWork {
     }
 
     async processing() {
-        this.sessionLog.outService('ANALYSIS CONTENTS DIFFERENCES')
-
         let listDelFolders = ContentWork.getDifferentFolders(this.localContent, this.remoteContent)
         let listMakeFolders = ContentWork.getDifferentFolders(this.remoteContent, this.localContent)
         let listDelFiles = ContentWork.compareListFiles(this.localContent, this.remoteContent, false, listDelFolders)
@@ -144,11 +165,17 @@ module.exports = class ContentWork {
 
         await this.taskGetRemoteHashes(needRemoteHashes)
         
-        for (let ind in listCheckHashes) {        
-            let checkFile = listCheckHashes[ind]
-            if (await this.getHashLocalFile(checkFile) !== this.remoteContent.files[checkFile].hash) {
-                listDelFiles.push(checkFile)
-                listUploadFiles.push(checkFile)
+        if (listCheckHashes.length > 0) {            
+            this.makePanel('Analysis of files hashes differences')
+
+            for (let ind in listCheckHashes) {        
+                let checkFile = listCheckHashes[ind]
+                this.updatePanel(ind, listCheckHashes.length)
+
+                if (await this.getHashLocalFile(checkFile) !== this.remoteContent.files[checkFile].hash) {
+                    listDelFiles.push(checkFile)
+                    listUploadFiles.push(checkFile)
+                }
             }
         }
         
@@ -160,7 +187,10 @@ module.exports = class ContentWork {
         this.ftpConnect.closeAllConnects()
 
         this.sessionLog.outService('SAVE KEEP REMOTE DATA')        
-        fs.writeFileSync(path.join(__dirname, '..', this.params.fileKeepRemoteContent), JSON.stringify(this.remoteContent, null, '\t'))        
+        fs.writeFileSync(path.join(__dirname, '..', this.params.fileKeepContent), JSON.stringify({
+            localFiles: this.localContent.files,
+            remoteContent: this.remoteContent
+        }))        
     }
 
     async getHashLocalFile(fileName) {
@@ -474,7 +504,26 @@ module.exports = class ContentWork {
             })
         })
     }
-            
+
+    makePanel(title) {
+        this.sessionLog.outService(title.toUpperCase())
+        Terminal.outputPanel(title, PANEL_TOP, PANEL_WIDTH, 3)
+        this.prevProgressDone = -1
+        this.updatePanel(0, 100)
+    }
+
+    updatePanel(currentInd, maxInd) {                
+        let lenTotal = PANEL_WIDTH - (PANEL_MARGIN * 2) - 2
+        let lenDone = Math.trunc(currentInd * lenTotal / Math.abs(maxInd - 1))
+
+        if (this.prevProgressDone != lenDone) {
+            process.stdout.write(Terminal.style.Cursor.MoveTo(PANEL_MARGIN + 2, PANEL_TOP + 2))
+            process.stdout.write('▓'.repeat(lenDone) + '░'.repeat(lenTotal - lenDone))
+
+            this.prevProgressDone = lenDone
+        }
+    }
+    
     static getDifferentFolders(baseListContent, checkListContent) {
         return checkListContent.folders.filter(folder => !baseListContent.folders.includes(folder))
             .sort((it1, it2) => (it1.split(path.sep).length > it2.split(path.sep).length) ? 1 : -1)
@@ -504,20 +553,6 @@ module.exports = class ContentWork {
         }
 
         return listFolders.filter(folderName => folderName)
-    }
-
-    static outProgressBar(title, currentInd = 0, maxInd = 0) {
-        if (!currentInd && !maxInd) Terminal.clearScreen()
-
-        const PANEL_WIDTH = 50
-        let lenDone = Math.trunc(currentInd * (PANEL_WIDTH - 8) / Math.abs(maxInd - 1))
-        
-        process.stdout.write(Terminal.style.Cursor.MoveTo(0, 2))
-        process.stdout.write(`┌─ ${title} ${'─'.repeat(PANEL_WIDTH - title.length - 3)}┐\n`)
-        process.stdout.write('│' + ' '.repeat(PANEL_WIDTH) + '│' + '\n')
-        process.stdout.write('│  ' + '▓'.repeat(lenDone) + '░'.repeat(PANEL_WIDTH - lenDone - 4) + '  │\n')
-        process.stdout.write('│' + ' '.repeat(PANEL_WIDTH) + '│' + '\n')
-        process.stdout.write('└' + '─'.repeat(PANEL_WIDTH) + '┘' + '\n')        
     }
 
 }

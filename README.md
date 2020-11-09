@@ -11,7 +11,7 @@ Menu actions:
 All settings are given in "sync-cfg.js":
 * pathLocalFolder - path local folder to sychronize
 * pathRemoteFolder - path remote folder to sychronize
-* fileKeepRemoteContent - file name for keep remote content
+* fileKeepContent - file name for keep data content
 * ftpParams 
     * connection - connection settings
     * numThreads - number of simultaneous actions streams
