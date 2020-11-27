@@ -13,7 +13,7 @@ All settings are given in "sync-cfg.js":
 * pathRemoteFolder - path remote folder to sychronize
 * fileKeepContent - file name for keep data content
 * confirmActions - before launch actions out to log planned actions and waiting for confirmation
-* excludeContent - content masks to exclude from processing. Are set relatively pathLocalFolder or pathRemoteFolder for local or remote content respectively. Example: '*.ext', 'folder*', '*/folder*', '*name*', 'name.ext', etc.
+* excludeContent - content masks to exclude from processing. Are set relatively pathLocalFolder or pathRemoteFolder for local or remote content respectively. Example: '\*.ext', 'folder\*', '\*/folder\*', '\*name\*', 'name.ext', etc.
 * ftpParams 
     * connection - connection settings
     * numThreads - number of simultaneous actions streams
