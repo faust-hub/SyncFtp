@@ -5,12 +5,15 @@ module.exports = {
 
     fileKeepContent: 'keep-content.json',    
 
-    ftpParams: {
+    confirmActions: true,
+    excludeContent: [],
+
+    ftpParams: {        
         connection: {
             host: '',
             port: 21,
             user: '',
-            password: ''            
+            password: ''
         },
 
         numThreads: 5,

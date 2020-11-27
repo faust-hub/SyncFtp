@@ -6,6 +6,8 @@ const contentWork = new ContentWork(config)
 
 Terminal.inputMenu({
     header: 'SYNCHRONIZE FTP v1.0',
+    width: 51,
+
     items: {
         'Synchronize Local to FTP': () => contentWork.synchronizeToFtp(false),
         'Synchronize Local to FTP (use keeped remote data)': () => contentWork.synchronizeToFtp(true)

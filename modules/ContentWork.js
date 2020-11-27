@@ -2,6 +2,7 @@ const path = require('path')
 const glob = require('glob')
 const fs = require('fs')
 const merge = require('merge')
+const micromatch = require('micromatch')
 const md5 = require('md5')
 
 const SessionLog = require('./SessionLog.js')
@@ -59,8 +60,6 @@ module.exports = class ContentWork {
                 this.getLocalContent()
                 await this.processing()
             }
-
-            this.sessionLog.outService('COMPLETE')
         }
     }
 
@@ -95,12 +94,15 @@ module.exports = class ContentWork {
         let res = { folders: [], files: {} }
         let pathRoot = path.join(__dirname, this.params.pathLocalFolder)
 
-        let listContent = glob.sync(path.join(pathRoot, '**/*'))
-        listContent.forEach((pathItem, ind) => {
+        let listContent = glob.sync('**/*', { cwd: pathRoot })
+
+        if (this.params.excludeContent.length > 0)
+            listContent = micromatch.not(listContent, this.params.excludeContent, { bash: true })
+
+        listContent.map(pathRelative => path.normalize(pathRelative)).forEach((pathRelative, ind) => {
             this.updatePanel(ind, listContent.length)
 
-            let pathRelative = path.normalize(pathItem).replace(pathRoot + path.sep, '')
-            let statsItem = fs.statSync(pathItem)
+            let statsItem = fs.statSync(path.join(pathRoot, pathRelative))
             
             if (statsItem.isFile()) {
                 res.files[pathRelative] = { size: statsItem.size, mtime: statsItem.mtimeMs }
@@ -108,7 +110,7 @@ module.exports = class ContentWork {
                 if (recKeep && recKeep.hash && (recKeep.size === statsItem.size) && (recKeep.mtime === statsItem.mtimeMs)) res.files[pathRelative].hash = recKeep.hash
             } else res.folders.push(pathRelative)
         })
-        
+
         Terminal.clearScreen()
         this.localContent = res
     }
@@ -130,13 +132,15 @@ module.exports = class ContentWork {
                 if (!['.', '..'].includes(item.name)) {
                     let pathItem = path.join(currentFolder || '', item.name)
 
-                    if (item.type === 'd') {
-                        if (!this.remoteContent.folders.includes(pathItem)) this.remoteContent.folders.push(pathItem)
-                        if (!await this.getRemoteContent(pathItem)) {
-                            this.remoteContent = null
-                            break
-                        }
-                    } else this.remoteContent.files[pathItem] = { size: item.size }
+                    if ((this.params.excludeContent.length == 0) || !micromatch.isMatch(pathItem, this.params.excludeContent, { bash: true })) {
+                        if (item.type === 'd') {
+                            if (!this.remoteContent.folders.includes(pathItem)) this.remoteContent.folders.push(pathItem)
+                            if (!await this.getRemoteContent(pathItem)) {
+                                this.remoteContent = null
+                                break
+                            }
+                        } else this.remoteContent.files[pathItem] = { size: item.size }
+                    }
                 }                
             }
             
@@ -149,7 +153,8 @@ module.exports = class ContentWork {
         let listMakeFolders = ContentWork.getDifferentFolders(this.remoteContent, this.localContent)
         let listDelFiles = ContentWork.compareListFiles(this.localContent, this.remoteContent, false, listDelFolders)
         let listUploadFiles = ContentWork.compareListFiles(this.remoteContent, this.localContent, false)
-
+        
+        let listRewriteFiles = []
         let needRemoteHashes = []
         let listCheckHashes = []
 
@@ -157,10 +162,7 @@ module.exports = class ContentWork {
             if (this.localContent.files[checkFile].size === this.remoteContent.files[checkFile].size) {
                 if (!this.remoteContent.files[checkFile].hash) needRemoteHashes.push(checkFile)
                 listCheckHashes.push(checkFile)
-            } else {
-                listDelFiles.push(checkFile)
-                listUploadFiles.push(checkFile)    
-            }
+            } else listRewriteFiles.push(checkFile)
         })
 
         await this.taskGetRemoteHashes(needRemoteHashes)
@@ -171,26 +173,59 @@ module.exports = class ContentWork {
             for (let ind in listCheckHashes) {        
                 let checkFile = listCheckHashes[ind]
                 this.updatePanel(ind, listCheckHashes.length)
-
-                if (await this.getHashLocalFile(checkFile) !== this.remoteContent.files[checkFile].hash) {
-                    listDelFiles.push(checkFile)
-                    listUploadFiles.push(checkFile)
-                }
+                if (await this.getHashLocalFile(checkFile) !== this.remoteContent.files[checkFile].hash) listRewriteFiles.push(checkFile)
             }
         }
         
+        listDelFolders = ContentWork.excludeFolders(listDelFolders, true)
+        listMakeFolders = ContentWork.excludeFolders(listMakeFolders, false)
+
+        if (this.params.confirmActions && this.outLogPlannedActions([
+            { title: 'DELETE FOLDERS', arr: listDelFolders },
+            { title: 'MAKE FOLDERS', arr: listMakeFolders },
+            { title: 'DELETE FILES', arr: listDelFiles },
+            { title: 'UPLOAD FILES', arr: listUploadFiles },
+            { title: 'REWRITE FILES', arr: listRewriteFiles }
+        ])) {
+            Terminal.clearScreen()
+            if (await Terminal.inputConfirm('Check the log for planned actions. Accept these actions? [Y/N]', ['Y', 'N']) === 'N') {
+                this.sessionLog.outService('CANCEL PLANNED ACTIONS')
+                return
+            }
+        }
+
+        listRewriteFiles.forEach(fileName => {
+            listDelFiles.push(fileName)
+            listUploadFiles.push(fileName)
+        })
+
         await this.taskDelRemoteFiles(listDelFiles)
-        await this.taskDelRemoteFolders(ContentWork.excludeFolders(listDelFolders, true))
-        await this.taskMakeRemoteFolders(ContentWork.excludeFolders(listMakeFolders, false))
+        await this.taskDelRemoteFolders(listDelFolders)
+        await this.taskMakeRemoteFolders(listMakeFolders)
         await this.taskUploadFiles(listUploadFiles)
         
         this.ftpConnect.closeAllConnects()
 
-        this.sessionLog.outService('SAVE KEEP REMOTE DATA')        
+        this.sessionLog.outService('SAVE CONTENT DATA')        
         fs.writeFileSync(path.join(__dirname, '..', this.params.fileKeepContent), JSON.stringify({
             localFiles: this.localContent.files,
             remoteContent: this.remoteContent
-        }))        
+        }))
+        
+        this.sessionLog.outService('COMPLETE')
+    }
+
+    outLogPlannedActions(inActions) {
+        if (inActions.some(actionData => actionData.arr.length > 0)) {
+            this.sessionLog.out('\nPLANNED ACTIONS:')
+    
+            inActions.forEach(actionData => {
+                if (actionData.arr.length > 0) 
+                    this.sessionLog.out(`∙ ${actionData.title} (x${actionData.arr.length}):`, actionData.arr)
+            })
+
+            return true
+        }
     }
 
     async getHashLocalFile(fileName) {

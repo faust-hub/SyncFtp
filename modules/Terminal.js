@@ -42,9 +42,13 @@ module.exports = class Terminal {
     // -InputMenu
     static async inputMenu(inData) {
         let listItems = []
+        let numHK = inData.numHK && (Object.keys(inData.items).length < 11) ? 0 : -1
 
-        for (let itemName in inData.items)
-            listItems.push({ name: itemName, value: inData.items[itemName] })
+        for (let itemName in inData.items) {
+            let recItem = { name: itemName, value: inData.items[itemName] }
+            if (numHK > -1) recItem.key = (++numHK < 10) ? numHK.toString() : '0'
+            listItems.push(recItem)
+        }
 
         let options = {
             header: (inData.header && (inData.header.length > 0)) ? `${Terminal.style.Bright} ${inData.header}${Terminal.style.Reset}` : ''
@@ -73,19 +77,22 @@ module.exports = class Terminal {
             header: '',
             footer: '',
             top: 2, 
-            width: 53, 
+            width: 48, 
             marginHoriz: 1,
             multiSelect: false,
             categories: {}, // Name: { sign:'', caption:'', signColor:escape_code }, ...
             outBottomSigns: false                
         }, inOptions)
         
+        const STR_CLEAR_SCREEN = escapeCodes.Clear + escapeCodes.Cursor.Show + escapeCodes.Cursor.MoveTo(0, options.top)
+
         let topLine = 0
         let activeLine = 0
         let activeCategory = ''     
         let keysCategories = Object.keys(options.categories)
 
         srcItemsList = srcItemsList.map(record => (typeof record === 'string') ? { name: record } : record)
+        options.isUseHotKey = srcItemsList.some(record => record.key)
 
         if (keysCategories.length > 0) {
             srcItemsList = srcItemsList.map(record => {
@@ -101,7 +108,6 @@ module.exports = class Terminal {
 
             if (options.width < minWidth) options.width = minWidth
         }
-
 
         let itemsList = srcItemsList
         if (options.filtered) itemsList = this.filterItemsList(srcItemsList, options.filter, options.sortByName, activeCategory)
@@ -128,7 +134,7 @@ module.exports = class Terminal {
 
                     case 'escape':
                         let outResult = resultItem.map(item => item.value !== undefined ? item.value : item.name)
-                        this.extemptKeypressEvents(stdinListener, escapeCodes.Clear + escapeCodes.Cursor.Show + escapeCodes.Cursor.MoveTo(0, options.top))
+                        this.extemptKeypressEvents(stdinListener, STR_CLEAR_SCREEN)
                         resolve(options.multiSelect ? outResult : outResult.pop())
                     break       
                     
@@ -189,10 +195,18 @@ module.exports = class Terminal {
 
                     default:
                         if (str) {
-                            str = str.replace(/[\f\n\r\t\v]/gi, '')                        
-                            if (options.filtered && (str.length > 0)) {
-                                options.filter += str
-                                isRedraw = true
+                            if (!options.isUseHotKey || !itemsList.some(item => {
+                                if ((item.enable !== false) && (item.key === str.toUpperCase())) {
+                                    this.extemptKeypressEvents(stdinListener, STR_CLEAR_SCREEN)
+                                    resolve(item.value !== undefined ? item.value : item.name)
+                                    return true
+                                }
+                            })) {
+                                str = str.replace(/[\f\n\r\t\v]/gi, '')                        
+                                if (options.filtered && (str.length > 0)) {
+                                    options.filter += str
+                                    isRedraw = true
+                                }
                             }
                         }
                 }
@@ -238,27 +252,27 @@ module.exports = class Terminal {
         for (let line = 0; line < options.lines; line++) {
             let indexItem = topLine + line
             if (indexItem < itemsList.length) {
-
-                let colorItem = (line == activeLine) ? escapeCodes.Reverse 
-                    : (itemsList[indexItem].enable === false) ? escapeCodes.fg.Gray
-                    : escapeCodes.fg.White 
+                let item = itemsList[indexItem]
 
                 let categoryItem = ''
                 let categorySignLen = 0
+                let colorItem = (line == activeLine) ? escapeCodes.Reverse : (item.enable === false ? escapeCodes.fg.Gray : escapeCodes.fg.White)
 
                 if (numCategories > 0) {
-                    let categoryRec = options.categories[itemsList[indexItem].category] || { sign: ' ', signColor: escapeCodes.Reset }
+                    let categoryRec = options.categories[item.category] || { sign: ' ', signColor: escapeCodes.Reset }
 
-                    if (itemsList[indexItem].categoryColor) categoryItem = itemsList[indexItem].categoryColor + categoryRec.sign + escapeCodes.Reset 
+                    if (item.categoryColor) categoryItem = item.categoryColor + categoryRec.sign + escapeCodes.Reset 
                     else if (categoryRec.signColor) categoryItem = categoryRec.signColor + categoryRec.sign + escapeCodes.Reset 
 
                     categoryItem += ' '
                     categorySignLen = categoryRec.sign.length + 1
                 }
 
-                let nameItem = itemsList[indexItem].name + ' '.repeat(options.width - itemsList[indexItem].name.length - categorySignLen - (options.marginHoriz * 2))
-
-                process.stdout.write(`${' '.repeat(options.marginHoriz)}${categoryItem}${colorItem}${nameItem}${escapeCodes.Reset}\n`)
+                let strHotKey = options.isUseHotKey ? (item.key ? `[${item.key}] ` : '    ') : ''
+                let numSpaces = options.width - strHotKey.length - item.name.length - categorySignLen - (options.marginHoriz * 2)
+                let nameItem = numSpaces < 0 ? item.name.slice(0, numSpaces - 3) + '...' : item.name + ' '.repeat(numSpaces)
+                
+                process.stdout.write(`${' '.repeat(options.marginHoriz)}${strHotKey}${categoryItem}${colorItem}${nameItem}${escapeCodes.Reset}\n`)
             } else break
         }
 
@@ -267,7 +281,7 @@ module.exports = class Terminal {
         if (options.multiSelect) footerItems.push('[CTRL+ENTER] - select all')
         
         this.outBorderLine(options.categories, options.outBottomSigns, activeCategory, itemsList.length - options.lines - topLine, '▼', options.width)
-        process.stdout.write(footerItems.join(', ') + '\n' + options.footer)
+        process.stdout.write(' '.repeat(options.marginHoriz) + footerItems.join(', ') + '\n' + ' '.repeat(options.marginHoriz) + options.footer)
 
         if ((topStr !== '') || options.filtered) {
             process.stdout.write(escapeCodes.Cursor.MoveTo(0, options.top) + ' '.repeat(options.width))
